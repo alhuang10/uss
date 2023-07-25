@@ -1,3 +1,28 @@
+# My Modifications
+
+For future reference, use as a filtering step for identifying/removing transcribed podcast files with background music using USS. Level 1 categories include "Human sounds" and "Music"
+
+Usage
+```
+# Creates a JSON of filename to a dict mapping sound type to energy level
+srun --nodes=1 --gpus-per-node=1 --ntasks-per-node=1 python run_uss_script.py --speaker_name X
+
+# Example dict mapping
+{'Animal': 22.01410778617704,
+ 'Channel, environment and background': 0.0,
+ 'Human sounds': 552.0432962744924,
+ 'Music': 0.004713556009171506,
+ 'Natural sounds': 0.0,
+ 'Sounds of things': 0.0,
+ 'Source-ambiguous sounds': 0.0}
+
+```
+
+```
+# Use created JSON to remove files from directory that have music/no human sounds/etc 
+python filter_music_files.py --speaker_name X
+```
+
 # Universal Source Separation (USS) with Weakly labelled Data
 
 This is the PyTorch implementation of the Universal Source Separation with Weakly labelled Data [1]. The USS system can automatically detect and separate sound classes from a real recording. The USS system can separate up to hundreds of sound classes sound classes in a hierarchical ontology structure. The USS system is trained on the weakly labelled AudioSet dataset only. Here is a demo:
