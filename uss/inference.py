@@ -23,8 +23,8 @@ from uss.utils import (get_audioset632_id_to_lb, get_path,
                        load_pretrained_panns, parse_yaml, remove_silence,
                        repeat_to_length)
 
-
-def separate(args) -> None:
+# My modifications, load pl_model and at_model from outside instead of reloading each time
+def separate(args, pl_model, at_model) -> None:
     r"""Do separation for active sound classes."""
 
     # Arguments & parameters
@@ -46,35 +46,30 @@ def separate(args) -> None:
     segment_seconds = configs["data"]["segment_seconds"]
     segment_samples = int(sample_rate * segment_seconds)
 
-    print("Using {}.".format(device))
-
     # Create directory
     if not output_dir:
         output_dir = os.path.join(
             "separated_results",
             Path(audio_path).stem)
 
-    # Load pretrained universal source separation model
-    print("Loading model ...")
-
     warnings.filterwarnings("ignore", category=UserWarning)
 
-    pl_model = load_ss_model(
-        configs=configs,
-        checkpoint_path=checkpoint_path,
-    ).to(device)
+
+    # pl_model = load_ss_model(
+    #     configs=configs,
+    #     checkpoint_path=checkpoint_path,
+    # ).to(device)
 
     # Load audio
     audio, fs = librosa.load(path=audio_path, sr=sample_rate, mono=True)
 
     # Load pretrained audio tagging model
-    at_model_type = "Cnn14"
-
-    at_model = load_pretrained_panns(
-        model_type=at_model_type,
-        checkpoint_path=get_path(panns_paths_dict[at_model_type]),
-        freeze=True,
-    ).to(device)
+    # at_model_type = "Cnn14"
+    # at_model = load_pretrained_panns(
+    #     model_type=at_model_type,
+    #     checkpoint_path=get_path(panns_paths_dict[at_model_type]),
+    #     freeze=True,
+    # ).to(device)
 
     flag_sum = sum([
         len(levels) > 0,
@@ -89,11 +84,23 @@ def separate(args) -> None:
     if flag_sum == 0:
         levels = [1, 2, 3]
 
-    print("Separating ...")
-
     # Separate by hierarchy
     if len(levels) > 0:
-        separate_by_hierarchy(
+        # separate_by_hierarchy(
+        #     audio=audio,
+        #     sample_rate=sample_rate,
+        #     segment_samples=segment_samples,
+        #     at_model=at_model,
+        #     pl_model=pl_model,
+        #     device=device,
+        #     levels=levels,
+        #     ontology_path=ontology_path,
+        #     non_sil_threshold=non_sil_threshold,
+        #     output_dir=output_dir
+        # )
+
+        # New code - Get normalized energy levels of separate tracks on Level 1
+        label_to_energy_level = get_normalized_energy_levels(
             audio=audio,
             sample_rate=sample_rate,
             segment_samples=segment_samples,
@@ -105,6 +112,8 @@ def separate(args) -> None:
             non_sil_threshold=non_sil_threshold,
             output_dir=output_dir
         )
+
+        return label_to_energy_level
 
     # Separate by class IDs
     elif len(class_ids) > 0:
@@ -229,6 +238,81 @@ def load_ss_model(
     )
 
     return pl_model
+
+
+def get_normalized_energy(audio_array, sample_rate):
+    # File by me to get normalized energy of numpy array to detect false positives
+    energy = sum(abs(audio_array**2))
+    duration = len(audio_array) / sample_rate
+
+    normalized_energy = energy / duration
+    return normalized_energy
+
+
+def get_normalized_energy_levels(
+    audio: np.ndarray,
+    sample_rate: int,
+    segment_samples: int,
+    at_model: nn.Module,
+    pl_model: pl.LightningModule,
+    device: str,
+    levels: List[int],
+    ontology_path: str,
+    non_sil_threshold: float,
+    output_dir: str,
+) -> None:
+    r"""Separate by hierarchy."""
+
+    audioset632_id_to_lb = get_audioset632_id_to_lb(
+        ontology_path=ontology_path)
+
+    at_probs = calculate_segment_at_probs(
+        audio=audio,
+        segment_samples=segment_samples,
+        at_model=at_model,
+        device=device,
+    )
+    # at_probs: (segments_num, condition_dim)
+
+    # Parse and build AudioSet ontology tree
+    root = get_ontology_tree(ontology_path=ontology_path)
+
+    nodes = Node.traverse(root)
+
+    label_to_normalized_energy = {}
+
+    for level in levels:
+        nodes_level_n = get_nodes_with_level_n(nodes=nodes, level=level)
+
+        # Iterate through each of the root classes defined in `config.py`
+        for node in nodes_level_n:
+
+            class_id = node.class_id
+
+            subclass_indexes = get_children_indexes(node=node)
+            # E.g., [0, 1, ..., 71]
+
+            if len(subclass_indexes) == 0:
+                continue
+
+            # sep_audio is numpy array of audio for the given class_id label (e.g. "Human sounds")
+            sep_audio = separate_by_query_conditions(
+                audio=audio,
+                segment_samples=segment_samples,
+                at_probs=at_probs,
+                subclass_indexes=subclass_indexes,
+                pl_model=pl_model,
+                device=device,
+            )
+
+            # Write out separated audio
+            label = audioset632_id_to_lb[class_id]
+
+            normalized_energy = get_normalized_energy(sep_audio, sample_rate)
+
+            label_to_normalized_energy[label] = normalized_energy
+    
+    return label_to_normalized_energy
 
 
 def separate_by_hierarchy(
